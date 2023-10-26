@@ -1,7 +1,9 @@
 import { Command, OptionValues } from "commander";
 // import figlet from "figlet";
 
-import fs = require("fs");
+import fs = require("fs/promises");
+import { existsSync } from "fs";
+
 import path = require("path");
 import ora from 'ora';
 import chalk from "chalk";
@@ -17,9 +19,6 @@ program
     .parse(process.argv);
 
 const options = program.opts();
-
-const geoTypingsDir: string = options.dir || "./";
-const preqPath: string = options.preq || `//dsone/rnd/r426rel/BSF;//dsone/rnd/r426rel/BSFTST`
 
 const Regex_ModuleIdExtractor = /module (["|'])(.*?[^\\])["|']/;
 const Regex_IgnoredModules = /DS\/DSTypings|DS\/TypingsTempModules|DS\/RDFSharedTypings/;
@@ -53,15 +52,25 @@ interface ValidateResult {
     redundantDuplicateModules: string[];
 }
 
+async function fileExistsAsync(path: string): Promise<boolean> {
+    try {
+        await fs.access(path, fs.constants.F_OK);
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
 // const x = new Promise<void>(resolve => resolve());
 // await x;
-function getConfigSettings(cmdOptions: OptionValues): ValidateConfig {
+async function getConfigSettings(cmdOptions: OptionValues): Promise<ValidateConfig> {
     const configPath = (cmdOptions.config || "./tools_config.json").trim();
     let validateConfig: Partial<ValidateConfig> = { knownDuplicateModuleIds: [] };
 
     try {
-        if (fs.existsSync(configPath)) {
-            validateConfig = (JSON.parse(fs.readFileSync(configPath, { encoding: "utf-8" })) as GenericConfig).validateConfig as ValidateConfig;
+        if (existsSync(configPath)) {
+            const fileData = await fs.readFile(configPath, { encoding: "utf-8" });
+            validateConfig = (JSON.parse(fileData) as GenericConfig ).validateConfig as ValidateConfig;
         }
     } catch (e) {
         //swallow
@@ -75,27 +84,32 @@ function getConfigSettings(cmdOptions: OptionValues): ValidateConfig {
     return validateConfig as ValidateConfig;
 }
 
-function getTypingsModuleDefinitionIds(dirPath: string, moduleData?: ModuleDataMap): ModuleDataMap {
+async function getTypingsModuleDefinitionIds(dirPath: string, moduleData?: ModuleDataMap): Promise<ModuleDataMap> {
     moduleData = moduleData ?? new Map();
-    const fileStats = fs.lstatSync(dirPath);
+    const fileStats = await fs.lstat(dirPath);
+    // const fileStats = fs.lstatSync(dirPath);
 
     if (fileStats.isDirectory()) {
-        const dirContents = fs.readdirSync(dirPath);
-        dirContents.forEach(item => {
+        // const dirContents = fs.readdirSync(dirPath);
+        const dirContents = await fs.readdir(dirPath);
+        const promises = dirContents.map(item => {
             const itemPath = path.join(dirPath, item);
-            getTypingsModuleDefinitionIds(itemPath, moduleData);
-        });
+            return getTypingsModuleDefinitionIds(itemPath, moduleData);
+        })
+
+        await Promise.all(promises);
     } else if (fileStats.isFile() && dirPath.endsWith(".d.ts")) {
-        parseDTSFile(dirPath, moduleData);
+        await parseDTSFile(dirPath, moduleData);
     }
     return moduleData;
 }
 
-function parseDTSFile(filePath: string, moduleData: ModuleDataMap): void {
-    const fileStats = fs.lstatSync(filePath);
+async function parseDTSFile(filePath: string, moduleData: ModuleDataMap): Promise<void> {
+    const fileStats = await fs.lstat(filePath);
     if (!fileStats.isFile()) { return; }
 
-    const lines = fs.readFileSync(filePath, { encoding: "utf-8" }).split(/\r?\n/);
+    const fileContent = await fs.readFile(filePath, { encoding: "utf-8"});
+    const lines = fileContent.split(/\r?\n/);
     for (const line of lines) {
 
         // skip if line is blank or is a commented line
@@ -110,7 +124,7 @@ function parseDTSFile(filePath: string, moduleData: ModuleDataMap): void {
     }
 }
 
-function checkForExistenceOfCompiledDTS(bsfPreqPath: string, moduleData: ModuleDataMap): ModuleData[] {
+async function checkForExistenceOfCompiledDTS(bsfPreqPath: string, moduleData: ModuleDataMap): Promise<ModuleData[]> {
     const preqPaths = bsfPreqPath.split(";");
     const duplicateModules: ModuleData[] = [];
     for (const moduleItem of moduleData.values()) {
@@ -119,7 +133,8 @@ function checkForExistenceOfCompiledDTS(bsfPreqPath: string, moduleData: ModuleD
 
         for (const preqPath of preqPaths) {
             const dtsPath = path.join(preqPath, "win_b64\\typings", modulePath)
-            if (fs.existsSync(dtsPath)) {
+            
+            if (await fileExistsAsync(dtsPath)) {
                 moduleItem.sourceTypingsExist = true;
                 moduleItem.sourceTypingsPath = dtsPath;
                 duplicateModules.push(moduleItem);
@@ -130,20 +145,20 @@ function checkForExistenceOfCompiledDTS(bsfPreqPath: string, moduleData: ModuleD
     return duplicateModules;
 }
 
-function writeValidateResult(outPath: string, result: ValidateResult): void {
+async function writeValidateResult(outPath: string, result: ValidateResult): Promise<void> {
     try {
-        fs.writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
+        fs.writeFile(outPath, JSON.stringify(result, null, 2), "utf8");
     } catch (e) {
         // swallow
     }
 }
 
-const config = getConfigSettings(options);
+const config = await getConfigSettings(options);
 const parseModuleDataSpinner = ora("Extracting Module IDs");
 parseModuleDataSpinner.color = "blue";
 parseModuleDataSpinner.start();
 // const parsedModuleData = getTypingsModuleDefinitionIds(geoTypingsDir.trim());
-const parsedModuleData = getTypingsModuleDefinitionIds(config.typingsDirectory)
+const parsedModuleData = await getTypingsModuleDefinitionIds(config.typingsDirectory)
 parseModuleDataSpinner.succeed();
 
 const testForDuplicateDefs = ora("Testing for Duplicate module definitions");
@@ -151,7 +166,7 @@ testForDuplicateDefs.spinner = "growHorizontal";
 testForDuplicateDefs.start();
 
 // const duplicateModules = checkForExistenceOfCompiledDTS(preqPath.trim(), parsedModuleData);
-const duplicateModules = checkForExistenceOfCompiledDTS(config.preqPath, parsedModuleData);
+const duplicateModules = await checkForExistenceOfCompiledDTS(config.preqPath, parsedModuleData);
 
 const validateResult: ValidateResult = {
     status: "Success",
@@ -212,8 +227,7 @@ if (!duplicateModules.length) {
     validateResult.redundantDuplicateModules = redundantModules;
 }
 
-
-writeValidateResult(config.outFilePath, validateResult);
+await writeValidateResult(config.outFilePath, validateResult);
 
 // Ok we have parsed out the module ids and only attempted to extract modules that are not commented out and not a GEOTypings / temp
 // Next we have tested for the existence of the d.ts in the preq path

@@ -1,0 +1,7 @@
+{
+    "validateConfig": {
+        "typingsDirectory": "D:\\Dev\\gitWorkspaces\\ds-typescript-typings",
+        "preqPath": "\\\\dsone\\bri\\r426\\BSF;\\\\dsone\\bri\\r426\\BSFTST",
+        "knownDuplicateModuleIds": []
+    }
+}
